@@ -3,7 +3,15 @@
             [dk.simongray.datalinguist.tree :as tree]
             [dk.simongray.datalinguist.dependency :as dep]
             [dk.simongray.datalinguist.util :refer [configs]]
-            [study.sino.sentence-patterns.tokens-regex :refer [tr zi+]]))
+            [study.sino.sentence-patterns.tokens-regex :refer [tr zi+]])
+  (:import [edu.stanford.nlp.semgraph.semgrex SemgrexPattern]
+           [edu.stanford.nlp.trees.tregex TregexPattern]
+           [edu.stanford.nlp.ling.tokensregex TokenSequencePattern]
+           [java.util.regex Pattern]))
+
+(def sem (comp dep/sem-pattern str))
+(def tre (comp tree/tregex-pattern str))
+(def tok (comp dl/token-pattern tr))
 
 (def spoken-chinese
   {:title     "Exemplification of Common Sentence Patterns in Spoken Chinese"
@@ -21,7 +29,7 @@
   {"AA看"
    {:reference  [spoken-chinese]
     :pinyin     "AA kàn"
-    :expression {:semgrex "{value:看} >/compound:vc/ {tag:VV}=AA"}
+    :expression (sem "{value:看} >/compound:vc/ {tag:VV}=AA")
     :definition "to give ~ a try"
     :examples   ["你有什么好建议，先说说看。"
                  "这些菜都是我做的，不知道合不合你的口味，你吃吃看。"
@@ -29,7 +37,7 @@
    "爱～不～"
    {:reference  [common-330]
     :pinyin     "ài ~ bù ~"
-    :expression {:tokens "\"爱\" ( []+ ) \"不\" \\1"}
+    :expression (tok "\"爱\" ( []+ ) \"不\" \\1")
     :definition "(it's up to smn) whether ~ or not"
     :note       "expresses dissatisfaction with the other person"
     :examples   ["道理我都讲清楚了，你爱听不听。"
@@ -40,7 +48,7 @@
    "爱～就～"
    {:reference  [common-330]
     :pinyin     "ài ~ jiù ~"
-    :expression {:tokens "\"爱\" ( []+ ) \"就\" \\1"}
+    :expression (tok "\"爱\" ( []+ ) \"就\" \\1")
     :definition "(do) ~ as one wishes"
     :note       "occasionally expressing slight dissatisfaction"
     :examples   ["一个人生活可自由啦，爱干什么就干什么。"
@@ -51,7 +59,7 @@
    "把A～成/做B"
    {:reference  [common-330]
     :pinyin     "bǎ A ~ chéng/zuò B"
-    :expression {:tokens (tr "'把'" zi+ "([{tag:VV;word:/.+(成|做)/}]+)" zi+)}
+    :expression (tok "'把'" zi+ "([{tag:VV;word:/.+(成|做)/}]+)" zi+)
     :definition "to ~ A as (or into) B"
     :note       "成/做 is always prepended by ~ (a verb indicating manner)"
     :examples   ["看来政府要把社会医疗保险当成大量来抓。"
@@ -82,36 +90,30 @@
   [& sentences]
   (mapcat (comp dl/tokens @nlp) sentences))
 
-(defn semgrex-matches
-  "Return all matches of `semgrex` pattern found in `s`."
-  [semgrex s]
-  (when semgrex
-    (let [p (dep/sem-pattern semgrex)]
-      (not-empty (mapcat (partial dep/sem-seq p) (dependency-graphs s))))))
+(defn matches
+  "Return all matches of pattern `p` found in `s`."
+  [p s]
+  (condp instance? p
+    TokenSequencePattern
+    (not-empty (dl/token-seq p (tokens s)))
 
-(defn tregex-matches
-  "Return all matches of `tregex` pattern found in `s`."
-  [tregex s]
-  (when tregex
-    (let [p (tree/tregex-pattern tregex)]
-      (not-empty (mapcat (partial tree/tregex-seq p) (constituency-trees s))))))
+    SemgrexPattern
+    (not-empty (mapcat (partial dep/sem-seq p) (dependency-graphs s)))
 
-(defn token-matches
-  "Return all matches of `tokens-regex` pattern found in `s`."
-  [tokens-regex s]
-  (when tokens-regex
-    (let [p (dl/token-pattern tokens-regex)]
-      (not-empty (dl/token-seq p (tokens s))))))
+    TregexPattern
+    (not-empty (mapcat (partial tree/tregex-seq p) (constituency-trees s)))
+
+    ;; TODO: return token results instead of strings
+    Pattern
+    (re-seq p s)))
 
 (defn find-patterns
   "Return a mapping from pattern name to pattern instances found in `s`."
   [s]
-  (->> (for [[k {:keys [expression]}] patterns]
-         (when-let [{:keys [semgrex tregex tokens]} expression]
-           (when-let [matches (or (semgrex-matches semgrex s)
-                                  (tregex-matches tregex s)
-                                  (token-matches tokens s))]
-             {k matches})))
+  (->> (for [[k v] patterns]
+         (let [p (:expression v)]
+           (when-let [res (matches p s)]
+             {k res})))
        (apply merge-with into)))
 
 (comment
@@ -119,16 +121,15 @@
   (digits->diacritics "ai4 ~ jiu4 ~")
 
   (tokens "一个人生活可自由啦，爱干什么就干什么。")
-  (token-matches "\"爱\" ([]+) \"就\" \\1"
-                 "一个人生活可自由啦，爱干什么就干什么。")
+  (matches (tok "\"爱\" ([]+) \"就\" \\1")
+           "一个人生活可自由啦，爱干什么就干什么。")
   (constituency-trees "一个人生活可自由啦，爱干什么就干什么。")
 
-  (semgrex-matches "{value:看} >/compound:vc/ {tag:VV}=AA"
-                   "甲：这电视机你能修好吗？ 乙：现在还不知道，试试看吧。")
+  (matches (sem "{value:看} >/compound:vc/ {tag:VV}=AA")
+           "甲：这电视机你能修好吗？ 乙：现在还不知道，试试看吧。")
   (dependency-graphs "一个人生活可自由啦，爱干什么就干什么。"
                      "放假了，我爱几点起就几点起,太舒服了。"
                      "我这几天就在家，你爱哪天来就哪天来吧。"
                      "父母都出差了，孩子在家爱打扑克就打扑克，爱看电视就看电视，没人管。")
-  (semgrex-matches "{value:看} >/compound:vc/ {tag:VV}=AA" "一个人生活可自由啦，爱干什么就干什么。")
-  (find-patterns "一个人生活可自由啦，爱干什么就干什么。")
+  (find-patterns "看来政府要把社会医疗保险当成大量来抓。")
   #_.)
